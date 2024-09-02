@@ -171,9 +171,11 @@ if uploaded_file is not None and not df.empty:
         BTC: Menge > 0 und Code C""")
 
         st.caption("""
-        GuV Termingeschäfte: Wert aus Spalte 'Realisierter G&V' wenn 'Typ' = STC
-        GuV Stillhaltergeschäfte (Vereinnahmung): Negativer Wert aus Spalte 'Basis' wenn 'Typ' = STO
-        GuV Stillhaltergeschäfte (Glattstellung): Differenz aus 'Realisierter G&V' und 'Basis' wenn 'Typ' = BTC
+        GuV Termingeschäfte: Wert aus Spalte 'Realisierter G&V' wenn 'Typ' = STC 
+                   
+        GuV Stillhaltergeschäfte (Vereinnahmung): Negativer Wert aus Spalte 'Basis' wenn 'Typ' = STO 
+        
+        GuV Stillhaltergeschäfte (Glattstellung): Differenz aus 'Realisierter G&V' und 'Basis' wenn 'Typ' = BTC 
         """)
 
         st.caption("""
@@ -184,7 +186,9 @@ if uploaded_file is not None and not df.empty:
     if broker == "TastyTrade":
         st.caption("""
         GuV Termingeschäfte: Wert aus Spalte 'NO_WS_GAINLOSS' wenn 'LONG_SHORT_IND' = L  
-        GuV Stillhaltergeschäfte (Vereinnahmung): Wert aus Spalte 'NO_WS_PROCEEDS' wenn 'LONG_SHORT_IND' = S  
+                   
+        GuV Stillhaltergeschäfte (Vereinnahmung): Wert aus Spalte 'NO_WS_PROCEEDS' wenn 'LONG_SHORT_IND' = S 
+                    
         GuV Stillhaltergeschäfte (Glattstellung): Wert aus Spalte 'NO_WS_COST' wenn 'LONG_SHORT_IND' = S  
         """)
 
