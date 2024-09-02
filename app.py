@@ -7,6 +7,21 @@ from io import StringIO
 import urllib.request
 from typing import Tuple
 
+_ = """
+Funktionen dieser App:
+- Parsen der Transaktionen aus den Reports
+- Tagesgenaue Umrechnung des Transaktions-GuV von USD in EUR
+- Aufteilung des GuV in Steuertöpfe (Gewinne/Verluste aus Termingeschäften/Stillhaltergeschäften)
+
+
+Unterstützt Reports als CSV-Dateien von IBKR und Tasty.
+
+ACHTUNG:
+========
+GuV aus Geschäften mit Aktien, Indizes, Futures und Devisen 
+sowie Dividenden und Zinsen werden nicht berücksichtigt.
+"""
+
 # FUNCTIONS
 def download_fx_data() -> None:
     url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.zip"
@@ -24,19 +39,24 @@ def process_ibkr_statement(csvfile) -> Tuple[pd.DataFrame, float, float]:
         if row[0] == "Transaktionen":
             transactions.append(row)    
 
+    # transactions to df; skip header row
     df = pd.DataFrame.from_records(transactions[1:], columns=transactions[0])
 
+    # select only options trades
     df_clean = df[(df.Header == "Data") & (df.Vermögenswertkategorie == "Aktien- und Indexoptionen")]
     df_clean["Datum/Zeit"] = pd.to_datetime(df_clean["Datum/Zeit"], format="%Y-%m-%d, %H:%M:%S")
 
     for col in ["Menge", "Basis", "Realisierter G&V"]:
         df_clean[col] = df_clean[col].astype(float)
 
+    # assign trade types
     df_clean.loc[(df_clean["Menge"] > 0) & (df_clean["Code"].str.contains("O")), "Typ"] = "BTO"   # open long
     df_clean.loc[(df_clean["Menge"] < 0) & (df_clean["Code"].str.contains("C")), "Typ"] = "STC"   # close long
     df_clean.loc[(df_clean["Menge"] < 0) & (df_clean["Code"].str.contains("O")), "Typ"] = "STO"   # open short
     df_clean.loc[(df_clean["Menge"] > 0) & (df_clean["Code"].str.contains("C")), "Typ"] = "BTC"   # close short    
 
+    # Steuerliche Zuordnung
+    # Vereinnahmung bzw. Glattstellung von Stillhaltergeschäften müssen separat betrachtet werden!
     df_clean.loc[df_clean["Typ"] == "STC", "GuV Termingeschäfte"] = df_clean["Realisierter G&V"]
     df_clean.loc[df_clean["Typ"] == "STO", "GuV Stillhaltergeschäfte"] = -df_clean["Basis"]
     df_clean.loc[df_clean["Typ"] == "BTC", "GuV Stillhaltergeschäfte"] = df_clean["Realisierter G&V"] - df_clean["Basis"]
@@ -46,22 +66,27 @@ def process_ibkr_statement(csvfile) -> Tuple[pd.DataFrame, float, float]:
     df_clean["GuV Termingeschäfte EUR"] = df_clean.apply(
         lambda x: c.convert(
             x["GuV Termingeschäfte"], 
-            'EUR', 'USD', 
+            'USD', 'EUR', 
             date=x["Datum/Zeit"].date()), 
         axis=1)
 
     df_clean["GuV Stillhaltergeschäfte EUR"] = df_clean.apply(
         lambda x: c.convert(
             x["GuV Stillhaltergeschäfte"], 
-            'EUR', 'USD', 
+            'USD', 'EUR', 
             date=x["Datum/Zeit"].date()), 
         axis=1) 
 
+    # GuV Stillhaltergeschäfte + Gewinne Termingeschäfte
     zeile21 = df_clean["GuV Stillhaltergeschäfte EUR"].sum() + \
-        df_clean.loc[df_clean["GuV Termingeschäfte EUR"] > 0, "GuV Termingeschäfte EUR"].sum()  
+              df_clean.loc[df_clean["GuV Termingeschäfte EUR"] > 0, "GuV Termingeschäfte EUR"].sum()  
+    
+    # Verluste Termingeschäfte
     zeile24 = df_clean.loc[df_clean["GuV Termingeschäfte EUR"] < 0, "GuV Termingeschäfte EUR"].sum()
     
-    return df_clean, int(zeile21), int(-zeile24)
+    gainloss = df_clean["Realisierter G&V"].sum()
+
+    return df_clean, int(zeile21), int(-zeile24), int(gainloss)
 
 def process_tasty_statement(csvfile) -> Tuple[pd.DataFrame, float, float]:
     df_tasty = pd.read_csv(uploaded_file)
@@ -84,31 +109,34 @@ def process_tasty_statement(csvfile) -> Tuple[pd.DataFrame, float, float]:
     df_tasty["GuV Termingeschäfte EUR"] = df_tasty.apply(
         lambda x: c.convert(
             x["GuV Termingeschäfte"], 
-            'EUR', 'USD', 
+            'USD', 'EUR', 
             date=x["CLOSE_DATE"].date()), 
         axis=1)
 
     df_tasty["GuV Stillhaltergeschäfte open EUR"] = df_tasty.apply(
         lambda x: c.convert(
             x["GuV Stillhaltergeschäfte open"], 
-            'EUR', 'USD', 
+            'USD', 'EUR', 
             date=x["OPEN_DATE"].date()), 
         axis=1)
 
     df_tasty["GuV Stillhaltergeschäfte close EUR"] = df_tasty.apply(
         lambda x: c.convert(
             x["GuV Stillhaltergeschäfte close"], 
-            'EUR', 'USD', 
+            'USD', 'EUR', 
             date=x["CLOSE_DATE"].date()), 
         axis=1)
 
+    # GuV Stillhaltergeschäfte + Gewinne Termingeschäfte
     zeile21 = df_tasty["GuV Stillhaltergeschäfte open EUR"].sum() + \
-    df_tasty["GuV Stillhaltergeschäfte close EUR"].sum() + \
-    df_tasty.loc[df_tasty["GuV Termingeschäfte EUR"] > 0, "GuV Termingeschäfte EUR"].sum()    
+              df_tasty["GuV Stillhaltergeschäfte close EUR"].sum() + \
+              df_tasty.loc[df_tasty["GuV Termingeschäfte EUR"] > 0, "GuV Termingeschäfte EUR"].sum()    
 
+    # Verluste Termingeschäfte
     zeile24 = df_tasty.loc[df_tasty["GuV Termingeschäfte EUR"] < 0, "GuV Termingeschäfte EUR"].sum()
 
-    return df_tasty, int(zeile21), int(-zeile24)
+    gainloss = df_tasty["NO_WS_GAINLOSS"].sum()
+    return df_tasty, int(zeile21), int(-zeile24), int(gainloss)
 
 
 # APP
@@ -127,9 +155,9 @@ with st.sidebar:
 
     if uploaded_file is not None:
         if broker == "IBKR":
-            df, zeile21, zeile24 = process_ibkr_statement(StringIO(uploaded_file.getvalue().decode("utf-8")))
+            df, zeile21, zeile24, gainloss = process_ibkr_statement(StringIO(uploaded_file.getvalue().decode("utf-8")))
         if broker == "TastyTrade":
-            df, zeile21, zeile24 = process_tasty_statement(uploaded_file)
+            df, zeile21, zeile24, gainloss = process_tasty_statement(uploaded_file)
     
     
 # PAGE
@@ -143,25 +171,26 @@ if uploaded_file is not None and not df.empty:
         BTC: Menge > 0 und Code C""")
 
         st.caption("""
-        GuV Termingeschäfte: Wert aus Spalte 'Realisierter G&V' wenn STC  
-        GuV Stillhaltergeschäfte: Negativer Wert aus Spalte 'Basis' wenn STO _oder_ Differenz aus 'Realisierter G&V' und 'Basis' wenn BTC
+        GuV Termingeschäfte: Wert aus Spalte 'Realisierter G&V' wenn 'Typ' = STC
+        GuV Stillhaltergeschäfte (Vereinnahmung): Negativer Wert aus Spalte 'Basis' wenn 'Typ' = STO
+        GuV Stillhaltergeschäfte (Glattstellung): Differenz aus 'Realisierter G&V' und 'Basis' wenn 'Typ' = BTC
         """)
 
         st.caption("""
-        GuV aus Stillhaltergeschäften werden zum Zeitpunkt der Vereinnahmung bzw. Glattstellung tagesaktuell in EUR umgerechnet (STO bzw. BTC).  
-        GuV aus Termingeschäften werden zum Zeitpunkt der Schließung des Geschäfts tagesaktuell in EUR umgerechnet (STC).
+        GuV aus Stillhaltergeschäften werden zum Zeitpunkt der Vereinnahmung bzw. Glattstellung tagesaktuell in EUR umgerechnet.  
+        GuV aus Termingeschäften werden zum Zeitpunkt der Schließung des Geschäfts tagesaktuell in EUR umgerechnet.
         """)
 
     if broker == "TastyTrade":
         st.caption("""
-        GuV Termingeschäfte: Wert aus Spalte 'NO_WS_GAINLOSS' wenn LONG_SHORT_IND = L  
-        GuV Stillhaltergeschäfte open: Wert aus Spalte 'NO_WS_PROCEEDS' wenn LONG_SHORT_IND = S  
-        GuV Stillhaltergeschäfte close: Wert aus Spalte 'NO_WS_COST' wenn LONG_SHORT_IND = S  
+        GuV Termingeschäfte: Wert aus Spalte 'NO_WS_GAINLOSS' wenn 'LONG_SHORT_IND' = L  
+        GuV Stillhaltergeschäfte (Vereinnahmung): Wert aus Spalte 'NO_WS_PROCEEDS' wenn 'LONG_SHORT_IND' = S  
+        GuV Stillhaltergeschäfte (Glattstellung): Wert aus Spalte 'NO_WS_COST' wenn 'LONG_SHORT_IND' = S  
         """)
 
         st.caption("""
-        GuV aus Stillhaltergeschäften werden zum Zeitpunkt der Vereinnahmung bzw. Glattstellung tagesaktuell in EUR umgerechnet (OPEN_DATE bzw. CLOSE_DATE).  
-        GuV aus Termingeschäften werden zum Zeitpunkt der Schließung des Geschäfts tagesaktuell  in EUR umgerechnet (CLOSE_DATE).
+        GuV aus Stillhaltergeschäften werden zum Zeitpunkt der Vereinnahmung bzw. Glattstellung tagesaktuell in EUR umgerechnet.  
+        GuV aus Termingeschäften werden zum Zeitpunkt der Schließung des Geschäfts tagesaktuell in EUR umgerechnet.
         """)     
 
     st.dataframe(df, use_container_width=True)   
@@ -174,14 +203,18 @@ if uploaded_file is not None and not df.empty:
         zeile24_help = "Summe aller negativen Werte aus Spalte 'GuV Termingeschäfte EUR'"
 
     st.metric(
-        label="Zeile 21: Stillhaltereinkünfte und Gewinne aus Termingeschäften", 
+        label="Zeile 21: Stillhaltereinkünfte und Gewinne aus Termingeschäften (inkl. TAK)", 
         value=str(zeile21) + " €",
         help=zeile21_help)
     
     st.metric(
-        label="Zeile 24: Verluste aus Termingeschäften",
+        label="Zeile 24: Verluste aus Termingeschäften (inkl. TAK)",
         value=str(zeile24) + " €",
         help=zeile24_help)  
+    
+    st.metric(
+        label="Kontrolle (Summe Spalte NO_WS_GAINLOSS (Tasty) bzw. Realiserter G&V (IBKR))",
+        value=str(gainloss) + " USD")  
 
     st.error("__Achtung:__ GuV aus Geschäften mit Aktien, Indizes, Futures und Devisen sowie Dividenden und Zinsen werden nicht berücksichtigt.")
    
